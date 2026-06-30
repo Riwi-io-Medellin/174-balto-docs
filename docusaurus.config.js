@@ -49,7 +49,7 @@ const config = {
         title: 'Balto',
         logo: {
           alt: 'Balto Logo',
-          src: 'img/logo.svg',
+          src: 'img/logo.png',
         },
         items: [
           {
