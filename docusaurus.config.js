@@ -7,8 +7,8 @@ const config = {
   tagline: 'Professional dog-walking — tracked in real time',
   favicon: 'img/favicon.ico',
 
-  url: 'https://balto-docs.vercel.app',
-  baseUrl: '/',
+  url: 'https://github.com/Riwi-io-Medellin',
+  baseUrl: '/174-balto-docs/',
 
   organizationName: 'RIWI',
   projectName: 'balto',
