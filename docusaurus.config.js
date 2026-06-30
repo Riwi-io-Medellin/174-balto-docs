@@ -7,11 +7,11 @@ const config = {
   tagline: 'Professional dog-walking — tracked in real time',
   favicon: 'img/favicon.ico',
 
-  url: 'https://github.com/Riwi-io-Medellin',
+  url: 'https://Riwi-io-Medellin.github.io',
   baseUrl: '/174-balto-docs/',
 
-  organizationName: 'RIWI',
-  projectName: 'balto',
+  organizationName: 'Riwi-io-Medellin',
+  projectName: '174-balto-docs',
 
   onBrokenLinks: 'throw',
   markdown: {
