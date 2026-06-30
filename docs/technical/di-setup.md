@@ -46,32 +46,35 @@ User layer:
 Pet layer:
   PetRemoteDataSource(dio) → PetRepositoryImpl → PetRepository
 
-Walk layer:
-  WalkBookingRemoteDataSource(dio) → WalkBookingRepositoryImpl → WalkBookingRepository
-  WalkSessionRemoteDataSource(dio) → WalkSessionRepositoryImpl → WalkSessionRepository
+Walking history layer:
+  WalkingHistoryRemoteDataSource(dio) → WalkingHistoryRepositoryImpl → WalkingHistoryRepository
 
-Walker layer:
+Upload layer:
+  UploadRemoteDataSource(dio) → UploadRepositoryImpl → UploadRepository
+
+Walker profile layer (apply / update own profile):
   WalkerProfileRemoteDataSource(dio) → WalkerProfileRepositoryImpl → WalkerProfileRepository
+
+Walker listing layer (search / detail):
   WalkerRemoteDataSource(dio) → WalkerRepositoryImpl → WalkerRepository
+
+Walker availability layer:
   WalkerAvailabilityRemoteDataSource(dio) → WalkerAvailabilityRepositoryImpl → WalkerAvailabilityRepository
 
-Other layers:
-  WalkingHistoryRemoteDataSource → WalkingHistoryRepository
-  NotificationRemoteDataSource → NotificationRepository
-  UploadRemoteDataSource → UploadRepository
-  MeRemoteDataSource → MeRepository
-  FeedbackRemoteDataSource → FeedbackRepository
-  CoachRemoteDataSource → CoachRepository
+Walk booking layer:
+  WalkBookingRemoteDataSource(dio) → WalkBookingRepositoryImpl → WalkBookingRepository
+
+Walk session layer:
+  WalkSessionRemoteDataSource(dio) → WalkSessionRepositoryImpl → WalkSessionRepository
 
 Cubits (factories):
   AuthCubit(authRepository)
-  ProfileCubit(userRepo, tokenStorage, petRepo, walkBookingRepo, walkerProfileRepo, notificationRepo)
+  ProfileCubit(userRepo, tokenStorage, petRepo, walkingHistoryRepo, walkerProfileRepo)
   WalkerCubit(walkerRepository)
   WalkBookingCubit(walkBookingRepo, walkerRepo, petRepo)
   WalkerAvailabilityCubit(walkerAvailabilityRepo)
   WalkerBookingCubit(walkBookingRepo)
   MyWalksCubit(walkBookingRepo)
-  CoachCubit(coachRepo, flutterSecureStorage)
 ```
 
 ## Accessing dependencies
@@ -86,18 +89,11 @@ BlocProvider(
   create: (_) => sl<MyWalksCubit>()..load(),
   child: ...,
 )
-
-// In a screen that builds a cubit manually:
-WalkerLiveWalkCubit(
-  booking: booking,
-  walkSessionRepository: sl<WalkSessionRepository>(),
-  liveWalkService: WalkerLiveWalkService(),
-)
 ```
 
 ## Cubits NOT in the service locator
 
-`LiveWalkCubit` and `WalkerLiveWalkCubit` are created directly in their screens instead of being registered in GetIt. The reason: each instance owns a `WalkTrackingService` or `WalkerLiveWalkService` that holds open streams and SignalR connections. Registering them as factories would work, but creating them inline makes the lifecycle boundary explicit — the cubit (and its streams) live exactly as long as the screen.
+`LiveWalkCubit` and `WalkerLiveWalkCubit` are created directly in their screens instead of being registered in GetIt. The reason: each instance owns a `WalkTrackingService` or `WalkerLiveWalkService` that holds open streams and SignalR connections. Creating them inline makes the lifecycle boundary explicit — the cubit (and its streams) live exactly as long as the screen.
 
 ```dart
 // live_walk_screen.dart — explicit instantiation

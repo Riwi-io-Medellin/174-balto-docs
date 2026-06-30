@@ -10,7 +10,7 @@ const sidebars = {
     },
     {
       type: 'category',
-      label: 'Technical Documentation',
+      label: 'Mobile App (Flutter)',
       collapsed: false,
       items: [
         'technical/architecture',
@@ -20,6 +20,15 @@ const sidebars = {
         'technical/realtime-tracking',
         'technical/di-setup',
         'technical/background-location',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Backend (.NET)',
+      collapsed: false,
+      items: [
+        'technical/backend-architecture',
+        'technical/backend-api',
       ],
     },
   ],

@@ -1,0 +1,843 @@
+From 3d791a6ac1a5c614ffdcc1034779cf0ed7e50f52 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 30 Jun 2026 23:14:42 +0000
+Subject: [PATCH] docs: update technical specs with current backend and Flutter
+ state
+
+- Add backend-architecture.md: .NET 10 Clean Architecture, EF Core,
+  ASP.NET Identity, JWT tokens, PostgreSQL schema, Docker, local setup
+- Add backend-api.md: implemented endpoints (Auth + Users), request/
+  response shapes, error format, module implementation roadmap
+- Update api-integration.md: mark live vs planned endpoints, remove
+  non-existent /auth/register, add backend-api cross-link, reflect
+  actual ApiClient/AuthInterceptor implementation
+- Update di-setup.md: remove nonexistent registrations (Notification,
+  Me, Feedback, Coach repos/cubits); align with actual injection.dart
+- Update project-structure.md: align entities, repository interfaces,
+  screens, and bloc table with actual codebase; remove coach/ screen
+- Update sidebars.js: add Backend (.NET) category with new docs
+---
+ docs/technical/api-integration.md      | 124 +++++++++-----
+ docs/technical/backend-api.md          | 227 +++++++++++++++++++++++++
+ docs/technical/backend-architecture.md | 168 ++++++++++++++++++
+ docs/technical/di-setup.md             |  38 ++---
+ docs/technical/project-structure.md    |  51 ++++--
+ sidebars.js                            |  11 +-
+ 6 files changed, 538 insertions(+), 81 deletions(-)
+ create mode 100644 docs/technical/backend-api.md
+ create mode 100644 docs/technical/backend-architecture.md
+
+diff --git a/docs/technical/api-integration.md b/docs/technical/api-integration.md
+index 635ce07..3c1ad9c 100644
+--- a/docs/technical/api-integration.md
++++ b/docs/technical/api-integration.md
+@@ -10,88 +10,122 @@ Balto communicates with a .NET backend via REST. All HTTP calls are made through
+ 
+ ## Dio client setup
+ 
++`lib/core/network/api_client.dart`
++
+ ```dart
+-// core/network/dio_client.dart
+-Dio createDio(TokenStorage tokenStorage) {
+-  final dio = Dio(BaseOptions(
+-    baseUrl: Env.apiBaseUrl,   // e.g. https://api.balto.app/api
+-    connectTimeout: const Duration(seconds: 10),
+-    receiveTimeout: const Duration(seconds: 10),
+-  ));
+-  dio.interceptors.add(AuthInterceptor(tokenStorage));
+-  return dio;
++class ApiClient {
++  ApiClient(TokenStorage tokenStorage) {
++    dio = Dio(BaseOptions(
++      baseUrl: Env.apiBaseUrl,   // e.g. http://api-balto.duckdns.org/api
++      connectTimeout: const Duration(seconds: 10),
++      receiveTimeout: const Duration(seconds: 10),
++      contentType: 'application/json',
++      responseType: ResponseType.json,
++      validateStatus: (status) => status != null && status < 500,
++    ));
++    dio.interceptors.add(
++      AuthInterceptor(tokenStorage: tokenStorage, dio: dio),
++    );
++  }
++
++  late final Dio dio;
+ }
+ ```
+ 
+ ## AuthInterceptor
+ 
+-Every outgoing request has the `Authorization: Bearer <token>` header injected automatically:
++`lib/core/network/auth_interceptor.dart`
++
++Every outgoing request has the `Authorization: Bearer <token>` header injected automatically. On a 401 response the interceptor attempts a silent token refresh using a **separate** `Dio` instance (preventing a refresh loop), stores the new tokens, and retries the original request exactly once.
+ 
+ ```dart
+-class AuthInterceptor extends Interceptor {
++class AuthInterceptor extends QueuedInterceptorsWrapper {
+   @override
+   void onRequest(RequestOptions options, RequestInterceptorHandler handler) async {
+-    final token = await _tokenStorage.readAccessToken();
++    final token = await tokenStorage.readAccessToken();
+     if (token != null) {
+       options.headers['Authorization'] = 'Bearer $token';
+     }
+     handler.next(options);
+   }
++
++  @override
++  void onError(DioException err, ErrorInterceptorHandler handler) async {
++    // On 401: try silent refresh, retry once, then clear tokens and propagate
++    ...
++  }
+ }
+ ```
+ 
+-## Endpoints used by the app
++`QueuedInterceptorsWrapper` ensures concurrent requests all wait for the single refresh call instead of each triggering their own.
+ 
+-### Auth
++## Backend endpoint status
++
++:::info
++The .NET backend (`174-balto-backend`) is under active development. The table below marks which endpoints are **live** in the backend today versus **planned** (datasources exist in the Flutter app but the backend hasn't implemented them yet). See [Backend API Reference](/technical/backend-api) for request/response details on live endpoints.
++:::
++
++### Auth — live ✅
++
++| Method | Path | Description |
++|---|---|---|
++| POST | `/api/auth/login` | Returns access + refresh tokens |
++| POST | `/api/auth/refresh` | Issues new token pair from a valid refresh token |
++| POST | `/api/auth/logout` | Revokes the refresh token |
++
++### Users — live ✅
+ 
+ | Method | Path | Description |
+ |---|---|---|
+-| POST | `/auth/login` | Returns access + refresh tokens |
+-| POST | `/auth/register` | Creates account |
++| GET | `/api/users` | List all users (requires auth) |
++| GET | `/api/users/{id}` | Fetch user by GUID (requires auth) |
++| POST | `/api/users` | Create a user (requires auth) |
++| PUT | `/api/users/{id}` | Update user profile (requires auth) |
++| DELETE | `/api/users/{id}` | Delete a user (requires auth) |
+ 
+-### Users
++### Pets — planned 🔜
+ 
+ | Method | Path | Description |
+ |---|---|---|
+-| GET | `/users/{id}` | Fetch user profile |
+-| PUT | `/users/{id}` | Update profile (name, photo URL) |
++| GET | `/api/pets/my-pets` | List owner's pets |
++| POST | `/api/pets` | Add a pet |
++| PUT | `/api/pets/{id}` | Edit a pet |
++| DELETE | `/api/pets/{id}` | Remove a pet |
+ 
+-### Pets
++### Walk bookings — planned 🔜
+ 
+ | Method | Path | Description |
+ |---|---|---|
+-| GET | `/pets/my-pets` | List owner's pets |
+-| POST | `/pets` | Add a pet |
+-| PUT | `/pets/{id}` | Edit a pet |
+-| DELETE | `/pets/{id}` | Remove a pet |
++| GET | `/api/walk-bookings/my-bookings` | List bookings (optional `?status=` filter) |
++| POST | `/api/walk-bookings` | Create a new booking |
++| POST | `/api/walk-bookings/{id}/cancel` | Owner cancels |
++| POST | `/api/walk-bookings/{id}/accept` | Walker accepts |
++| POST | `/api/walk-bookings/{id}/reject` | Walker rejects |
+ 
+-### Walk bookings
++### Walk sessions — planned 🔜
+ 
+ | Method | Path | Description |
+ |---|---|---|
+-| GET | `/walk-bookings/my-bookings` | List bookings (optional `?status=` filter) |
+-| POST | `/walk-bookings` | Create a new booking |
+-| POST | `/walk-bookings/{id}/cancel` | Owner cancels |
+-| POST | `/walk-bookings/{id}/accept` | Walker accepts |
+-| POST | `/walk-bookings/{id}/reject` | Walker rejects |
++| POST | `/api/walk-sessions/start-from-booking/{bookingId}` | Walker starts; returns `sessionId` |
++| POST | `/api/walk-sessions/{id}/location` | Walker posts GPS position (body: `{latitude, longitude, accuracy}`) |
++| POST | `/api/walk-sessions/{id}/finish` | Walker ends; returns distance + duration |
++| GET | `/api/walk-sessions/{id}/route` | Returns `[{latitude, longitude}]` array |
+ 
+-### Walk sessions
++### Walker profiles — planned 🔜
+ 
+ | Method | Path | Description |
+ |---|---|---|
+-| POST | `/walk-sessions/start-from-booking/{bookingId}` | Walker starts; returns `sessionId` |
+-| POST | `/walk-sessions/{id}/location` | Walker posts GPS position (body: `{latitude, longitude, accuracy}`) |
+-| POST | `/walk-sessions/{id}/finish` | Walker ends; returns distance + duration |
+-| GET | `/walk-sessions/{id}/route` | Returns `[{latitude, longitude}]` array |
++| GET | `/api/walker-profiles` | List all walkers |
++| GET | `/api/walker-profiles/{id}` | Get a specific walker |
++| GET | `/api/walker-profiles/me` | Get own walker profile |
++| POST | `/api/walker-profiles` | Create walker profile |
+ 
+-### Walker profiles
++### Walker availability — planned 🔜
+ 
+ | Method | Path | Description |
+ |---|---|---|
+-| GET | `/walker-profiles/me` | Get own walker profile |
+-| POST | `/walker-profiles` | Create walker profile |
+-| GET | `/walker-profiles/{id}` | Get a specific walker |
+-| GET | `/walker-profiles` | List all walkers |
++| GET | `/api/walker-availability/{walkerId}` | Get walker's schedule |
++| PUT | `/api/walker-availability/{walkerId}` | Update schedule |
+ 
+ ## DTO → Entity mapping
+ 
+@@ -115,19 +149,23 @@ class WalkBookingDto {
+     id: id,
+     status: _parseStatus(status),
+     walkSessionId: walkSessionId,
+-    actualDistanceMeters: json['totalDistanceMeters'],  // backend field name differs
+-    actualDurationSeconds: json['totalDurationSeconds'],
+     // ...
+   );
+ }
+ ```
+ 
+ :::caution Field name differences
+-Some backend field names differ from the Flutter entity names. `totalDistanceMeters` (backend) maps to `actualDistanceMeters` (entity), and `totalDurationSeconds` maps to `actualDurationSeconds`. Always check the DTO when adding new fields.
++Some backend field names differ from Flutter entity names. Always check the DTO when adding new fields.
+ :::
+ 
+ ## Error handling
+ 
++Backend error responses follow the format:
++
++```json
++{ "error": "User not found.", "code": "USER_NOT_FOUND" }
++```
++
+ Repository implementations catch `DioException` and convert it to a domain-level failure:
+ 
+ ```dart
+diff --git a/docs/technical/backend-api.md b/docs/technical/backend-api.md
+new file mode 100644
+index 0000000..d0cd2b4
+--- /dev/null
++++ b/docs/technical/backend-api.md
+@@ -0,0 +1,227 @@
++---
++id: backend-api
++title: Backend API Reference
++sidebar_position: 9
++---
++
++# Backend API Reference
++
++This page documents the endpoints currently implemented in the `.NET 10` backend. For the full planned endpoint list and Flutter integration details see [API Integration](/technical/api-integration).
++
++## Base URL
++
++```
++http://api-balto.duckdns.org/api
++```
++
++Swagger UI (development only): `http://localhost:5000/swagger`  
++OpenAPI JSON (development only): `http://localhost:5000/swagger/v1/swagger.json`
++
++## Authentication
++
++All protected endpoints require a JWT Bearer token:
++
++```
++Authorization: Bearer <accessToken>
++```
++
++### Token lifetimes
++
++| Token | Lifetime | Storage |
++|---|---|---|
++| Access token | 1 hour | Flutter `flutter_secure_storage` |
++| Refresh token | 7 days | In-memory on server (lost on restart) |
++
++:::caution
++Refresh tokens are stored in a server-side `ConcurrentDictionary`. They are lost on every server restart. This is the current dev behaviour and will be replaced with persistent storage in a later iteration.
++:::
++
++---
++
++## Auth endpoints
++
++### POST `/api/auth/login`
++
++Exchange email + password for a token pair.
++
++**Request body**
++```json
++{
++  "email": "admin@pawexplorers.com",
++  "password": "Password123!"
++}
++```
++
++**Response 200**
++```json
++{
++  "accessToken": "eyJ...",
++  "refreshToken": "a3f7...",
++  "expiresAt": "2025-07-01T15:30:00Z"
++}
++```
++
++**Response 401** — invalid credentials (no body).
++
++---
++
++### POST `/api/auth/refresh`
++
++Issue a new token pair from a valid refresh token. The old refresh token is invalidated immediately.
++
++**Request body**
++```json
++{ "refreshToken": "a3f7..." }
++```
++
++**Response 200** — same shape as `/login`.  
++**Response 401** — token expired or not found.
++
++---
++
++### POST `/api/auth/logout`
++
++Revoke a refresh token so it can no longer be used.
++
++**Request body**
++```json
++{ "refreshToken": "a3f7..." }
++```
++
++**Response 204** — revoked successfully.  
++**Response 404** — token not found.
++
++---
++
++## Users endpoints
++
++All `/api/users` endpoints require `Authorization: Bearer`.
++
++### GET `/api/users`
++
++Returns all users.
++
++**Response 200**
++```json
++[
++  {
++    "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
++    "firstName": "María",
++    "lastName": "López",
++    "email": "maria@example.com",
++    "photoUrl": null
++  }
++]
++```
++
++---
++
++### GET `/api/users/{id}`
++
++**Response 200** — `UserResponse` object.  
++**Response 404**
++```json
++{ "error": "User not found.", "code": "USER_NOT_FOUND" }
++```
++
++---
++
++### POST `/api/users`
++
++Create a new user record.
++
++**Request body**
++```json
++{
++  "firstName": "María",
++  "lastName": "López",
++  "email": "maria@example.com"
++}
++```
++
++**Response 201** — `UserResponse` with `Location: /api/users/{id}` header.  
++**Response 400**
++```json
++{ "error": "Unable to create user.", "code": "USER_CREATE_FAILED" }
++```
++
++---
++
++### PUT `/api/users/{id}`
++
++Update an existing user.
++
++**Request body**
++```json
++{
++  "firstName": "María",
++  "lastName": "López",
++  "photoUrl": "https://cdn.example.com/photo.jpg"
++}
++```
++
++**Response 200** — updated `UserResponse`.  
++**Response 404**
++```json
++{ "error": "User not found or request is invalid.", "code": "USER_UPDATE_FAILED" }
++```
++
++---
++
++### DELETE `/api/users/{id}`
++
++**Response 204** — deleted.  
++**Response 404**
++```json
++{ "error": "User not found.", "code": "USER_NOT_FOUND" }
++```
++
++---
++
++## Health check
++
++### GET `/health`
++
++No auth required. Returns `200 OK` with body `"OK"`. Used by load balancers and Docker health checks.
++
++---
++
++## Error format
++
++All error responses use a consistent envelope:
++
++```json
++{ "error": "Human-readable message.", "code": "SNAKE_CASE_CODE" }
++```
++
++HTTP status codes:
++
++| Code | Meaning |
++|---|---|
++| 200 | Success |
++| 201 | Resource created |
++| 204 | Success, no body (delete / logout) |
++| 400 | Bad request (validation or business rule failure) |
++| 401 | Unauthenticated |
++| 404 | Resource not found |
++
++---
++
++## Module implementation status
++
++The backend is structured around 64 use cases across 12 modules:
++
++| Module | Use cases | Status |
++|---|---|---|
++| User management & access | UC-01–08 | In Progress |
++| Pet profiles | UC-09–14 | Pending |
++| Walk Planner | UC-15–20 | Pending |
++| Walker Hub | UC-21–27 | Pending |
++| Matching & recommendations | UC-28–31 | Pending |
++| Booking & service management | UC-32–38 | Pending |
++| Real-time GPS tracking | UC-39–44 | Pending |
++| Lost & found dog alerts | UC-45–49 | Pending |
++| AI Coach | UC-50–55 | Pending |
++| Activity dashboard | UC-56–58 | Pending |
++| Reputation & ratings | UC-59–61 | Pending |
++| Administration | UC-62–64 | Pending |
+diff --git a/docs/technical/backend-architecture.md b/docs/technical/backend-architecture.md
+new file mode 100644
+index 0000000..de4c9e7
+--- /dev/null
++++ b/docs/technical/backend-architecture.md
+@@ -0,0 +1,168 @@
++---
++id: backend-architecture
++title: Backend Architecture
++sidebar_position: 8
++---
++
++# Backend Architecture
++
++The Balto backend (`174-balto-backend`) is a **.NET 10 Minimal API** built with Clean Architecture. It exposes REST endpoints and a SignalR hub for the Flutter mobile app.
++
++## Tech stack
++
++| Layer | Technology |
++|---|---|
++| Runtime | .NET 10 |
++| API style | Minimal API (no controllers) |
++| Database | PostgreSQL |
++| ORM | Entity Framework Core + Npgsql |
++| Identity | ASP.NET Core Identity |
++| Auth | JWT Bearer (HS256) with refresh tokens |
++| Real-time | SignalR (planned — hub not yet wired) |
++| Containerisation | Docker + docker-compose |
++
++## Solution structure
++
++```
++back-end-pets.sln
++│
++├── BackEndPets.Domain/          # Core — no external dependencies
++│   ├── Entities/                # Domain models (planned: Pet, Walker…)
++│   ├── Interfaces/              # Repository contracts (ICrudRepository<T>)
++│   └── Common/                  # Base classes, value objects
++│
++├── BackEndPets.Application/     # Business logic
++│   ├── DTOs/                    # Request / response objects per module
++│   │   ├── Auth/                # LoginRequest, RefreshTokenRequest, AuthResponse…
++│   │   ├── Users/               # CreateUserRequest, UpdateUserRequest, UserResponse…
++│   │   └── Common/              # ApiErrorResponse
++│   ├── Interfaces/              # Service contracts (IAuthService, IUserService)
++│   └── DependencyInjection.cs   # Registers application services
++│
++├── BackEndPets.Infrastructure/  # Data access and external services
++│   ├── Identity/                # AppIdentityDbContext, ApplicationUser, IdentitySeeder
++│   ├── Repositories/            # InMemoryCrudRepository<T> (generic in-memory store)
++│   ├── Services/                # AuthService, UserService
++│   └── DependencyInjection.cs   # Registers EF Core, Identity, services
++│
++└── back-end-pets/ (API)         # HTTP entry point
++    ├── Endpoints/               # Endpoint groups (AuthEndpoints, UsersEndpoints)
++    ├── Dockerfile               # Multi-stage Docker build
++    └── Program.cs               # App startup
++```
++
++## Layer dependency rule
++
++```
++API → Application → Domain ← Infrastructure
++```
++
++Each layer only references the layer directly inside it. `Domain` has **no external package references**.
++
++## Identity and database
++
++`AppIdentityDbContext` extends `IdentityDbContext<ApplicationUser, IdentityRole<Guid>, Guid>`. The `ApplicationUser` entity maps to the `users` table with snake_case column names:
++
++| Column | Type | Notes |
++|---|---|---|
++| `id` | uuid | Primary key |
++| `first_name` | text | |
++| `last_name` | text | |
++| `email` | text | Unique |
++| `id_number` | text | National ID number |
++| `id_type` | text | e.g. CC, Passport |
++| `location` | text | City / region |
++| `address` | text | |
++| `phone` | text | |
++| `phone_extra` | text | Optional second phone |
++| `photo_url` | text | |
++| `created_at` | timestamptz | |
++
++ASP.NET Identity tables (`identity_roles`, `identity_user_roles`, etc.) are also mapped to snake_case.
++
++## Infrastructure DI registration
++
++```csharp
++// BackEndPets.Infrastructure/DependencyInjection.cs
++services.AddDbContext<AppIdentityDbContext>(options =>
++    options.UseNpgsql(connectionString));
++
++services.AddIdentityCore<ApplicationUser>(options => { ... })
++    .AddRoles<IdentityRole<Guid>>()
++    .AddEntityFrameworkStores<AppIdentityDbContext>()
++    .AddDefaultTokenProviders();
++
++services.AddScoped<IAuthService, AuthService>();
++services.AddScoped<IUserService, UserService>();
++
++// Generic in-memory CRUD used for entities not yet persisted to PostgreSQL
++services.AddSingleton(typeof(ICrudRepository<>), typeof(InMemoryCrudRepository<>));
++```
++
++## Startup flow
++
++`Program.cs` runs on start:
++
++1. Configures JWT Bearer authentication (issuer, audience, signing key)
++2. Calls `AddApplicationServices()` + `AddInfrastructureServices()`
++3. **Runs EF Core migrations** automatically (`db.Database.MigrateAsync()`)
++4. **Seeds the demo admin user** (`IdentitySeeder.SeedDemoUserAsync`)
++5. Maps endpoints: `/health`, Swagger (dev only), `/api/auth/*`, `/api/users/*`
++
++## Demo seed user
++
++On every cold start the seeder creates this user if it doesn't exist:
++
++| Field | Value |
++|---|---|
++| Email | `admin@pawexplorers.com` |
++| Password | `Password123!` |
++
++Use this account to obtain a JWT token when testing the API locally.
++
++## Local setup
++
++### Prerequisites
++
++- .NET 10 SDK
++- PostgreSQL running locally (or via Docker)
++
++### Connection string
++
++Create `back-end-pets/appsettings.Development.json` (not committed):
++
++```json
++{
++  "ConnectionStrings": {
++    "DefaultConnection": "Host=localhost;Database=pets_db;Username=postgres_pets;Password=YOUR_PASSWORD"
++  }
++}
++```
++
++### Run
++
++```bash
++dotnet run --project back-end-pets/back-end-pets.csproj
++```
++
++API available at `http://localhost:5000`. Swagger UI at `http://localhost:5000/swagger` (development only).
++
++### Docker
++
++```bash
++cd back-end-pets
++docker build -t balto-backend .
++docker run -p 5000:8080 \
++  -e ConnectionStrings__DefaultConnection="Host=host.docker.internal;..." \
++  balto-backend
++```
++
++## Branch flow
++
++```
++feature/* → dev → staging → main
++```
++
++- `feature/*` always branches from `dev`
++- Never commit directly to `main` or `staging`
++- Merge to `main` only after `staging` is validated
+diff --git a/docs/technical/di-setup.md b/docs/technical/di-setup.md
+index 2ffb946..bcb0919 100644
+--- a/docs/technical/di-setup.md
++++ b/docs/technical/di-setup.md
+@@ -46,32 +46,35 @@ User layer:
+ Pet layer:
+   PetRemoteDataSource(dio) → PetRepositoryImpl → PetRepository
+ 
+-Walk layer:
+-  WalkBookingRemoteDataSource(dio) → WalkBookingRepositoryImpl → WalkBookingRepository
+-  WalkSessionRemoteDataSource(dio) → WalkSessionRepositoryImpl → WalkSessionRepository
++Walking history layer:
++  WalkingHistoryRemoteDataSource(dio) → WalkingHistoryRepositoryImpl → WalkingHistoryRepository
++
++Upload layer:
++  UploadRemoteDataSource(dio) → UploadRepositoryImpl → UploadRepository
+ 
+-Walker layer:
++Walker profile layer (apply / update own profile):
+   WalkerProfileRemoteDataSource(dio) → WalkerProfileRepositoryImpl → WalkerProfileRepository
++
++Walker listing layer (search / detail):
+   WalkerRemoteDataSource(dio) → WalkerRepositoryImpl → WalkerRepository
++
++Walker availability layer:
+   WalkerAvailabilityRemoteDataSource(dio) → WalkerAvailabilityRepositoryImpl → WalkerAvailabilityRepository
+ 
+-Other layers:
+-  WalkingHistoryRemoteDataSource → WalkingHistoryRepository
+-  NotificationRemoteDataSource → NotificationRepository
+-  UploadRemoteDataSource → UploadRepository
+-  MeRemoteDataSource → MeRepository
+-  FeedbackRemoteDataSource → FeedbackRepository
+-  CoachRemoteDataSource → CoachRepository
++Walk booking layer:
++  WalkBookingRemoteDataSource(dio) → WalkBookingRepositoryImpl → WalkBookingRepository
++
++Walk session layer:
++  WalkSessionRemoteDataSource(dio) → WalkSessionRepositoryImpl → WalkSessionRepository
+ 
+ Cubits (factories):
+   AuthCubit(authRepository)
+-  ProfileCubit(userRepo, tokenStorage, petRepo, walkBookingRepo, walkerProfileRepo, notificationRepo)
++  ProfileCubit(userRepo, tokenStorage, petRepo, walkingHistoryRepo, walkerProfileRepo)
+   WalkerCubit(walkerRepository)
+   WalkBookingCubit(walkBookingRepo, walkerRepo, petRepo)
+   WalkerAvailabilityCubit(walkerAvailabilityRepo)
+   WalkerBookingCubit(walkBookingRepo)
+   MyWalksCubit(walkBookingRepo)
+-  CoachCubit(coachRepo, flutterSecureStorage)
+ ```
+ 
+ ## Accessing dependencies
+@@ -86,18 +89,11 @@ BlocProvider(
+   create: (_) => sl<MyWalksCubit>()..load(),
+   child: ...,
+ )
+-
+-// In a screen that builds a cubit manually:
+-WalkerLiveWalkCubit(
+-  booking: booking,
+-  walkSessionRepository: sl<WalkSessionRepository>(),
+-  liveWalkService: WalkerLiveWalkService(),
+-)
+ ```
+ 
+ ## Cubits NOT in the service locator
+ 
+-`LiveWalkCubit` and `WalkerLiveWalkCubit` are created directly in their screens instead of being registered in GetIt. The reason: each instance owns a `WalkTrackingService` or `WalkerLiveWalkService` that holds open streams and SignalR connections. Registering them as factories would work, but creating them inline makes the lifecycle boundary explicit — the cubit (and its streams) live exactly as long as the screen.
++`LiveWalkCubit` and `WalkerLiveWalkCubit` are created directly in their screens instead of being registered in GetIt. The reason: each instance owns a `WalkTrackingService` or `WalkerLiveWalkService` that holds open streams and SignalR connections. Creating them inline makes the lifecycle boundary explicit — the cubit (and its streams) live exactly as long as the screen.
+ 
+ ```dart
+ // live_walk_screen.dart — explicit instantiation
+diff --git a/docs/technical/project-structure.md b/docs/technical/project-structure.md
+index 6850e35..4f13f7e 100644
+--- a/docs/technical/project-structure.md
++++ b/docs/technical/project-structure.md
+@@ -6,14 +6,19 @@ sidebar_position: 2
+ 
+ # Project Structure
+ 
++## Flutter app (`174-balto`)
++
+ ```
+ lib/
+ ├── core/
+-│   ├── constants/       # App-wide constants (AppColors, Env)
++│   ├── config/          # Env (API base URL, SignalR hub URL)
++│   ├── constants/       # AppColors and other app-wide constants
+ │   ├── di/              # GetIt dependency injection setup
+-│   ├── network/         # Dio client factory + AuthInterceptor
++│   ├── network/         # Dio client + AuthInterceptor
+ │   ├── services/        # Platform services (GPS, SignalR wrappers)
+-│   └── storage/         # TokenStorage (flutter_secure_storage)
++│   ├── storage/         # TokenStorage (flutter_secure_storage)
++│   ├── utils/           # JWT decoder and other helpers
++│   └── widgets/         # Shared core widgets
+ │
+ ├── domain/
+ │   ├── entities/        # Pure Dart business objects
+@@ -34,10 +39,10 @@ lib/
+ 
+ | File / Folder | Purpose |
+ |---|---|
++| `config/env.dart` | Base URLs for REST API and SignalR hub (compile-time constants) |
+ | `constants/app_colors.dart` | Brand colour palette used across the app |
+-| `constants/env.dart` | Base URLs for REST API and SignalR hub |
+ | `di/injection.dart` | Registers all singletons and factories with GetIt |
+-| `network/dio_client.dart` | Creates a configured Dio instance |
++| `network/api_client.dart` | Creates a configured Dio instance |
+ | `network/auth_interceptor.dart` | Attaches Bearer token to every request; refreshes on 401 |
+ | `services/walk_tracking_service.dart` | Owner-side SignalR client (receives location updates) |
+ | `services/walker_live_walk_service.dart` | Walker-side GPS stream with Android foreground service |
+@@ -50,42 +55,56 @@ lib/
+ |---|---|
+ | `User` | id, firstName, lastName, email, photoUrl |
+ | `Pet` | id, name, breed, age, photoUrl |
++| `Walker` | id, userId, name, photoUrl, bio, hourlyRate, rating |
+ | `WalkerProfile` | userId, bio, hourlyRate, rating, reviewCount |
++| `Walk` | id, walkerId, clientUserId, scheduledAt, durationMinutes, status |
+ | `WalkBooking` | id, walkerId, clientUserId, slotStart, durationMinutes, status, walkSessionId, totalPrice |
+-| `WalkSession` | id, bookingId, startedAt, finishedAt, routePoints |
+ | `WalkBookingStatus` | pending · accepted · inProgress · completed · rejected · walkerCancelled · ownerCancelled |
++| `AuthTokens` | accessToken, refreshToken |
++| `Business` | id, name, address, type, photoUrl, rating |
++| `AvailabilitySlot` | dayOfWeek, startTime, endTime |
++| `AvailabilityException` | date, reason |
++| `AvailableSlot` | slotStart, slotEnd |
+ 
+ ## domain/repositories/ (interfaces)
+ 
+ | Interface | Responsibilities |
+ |---|---|
++| `AuthRepository` | Login, refresh token, logout |
+ | `UserRepository` | Get user by ID, update profile |
+ | `PetRepository` | CRUD for owner's pets |
+ | `WalkBookingRepository` | Create booking, list my bookings (with status filter), cancel, accept/reject |
+ | `WalkSessionRepository` | Start session, post location, finish session, get route |
+-| `WalkerProfileRepository` | Get/create walker profile |
+-| `NotificationRepository` | Unread count |
++| `WalkerRepository` | List walkers, get walker detail |
++| `WalkerProfileRepository` | Get / create / update own walker profile |
++| `WalkerAvailabilityRepository` | Get/set walker schedule and exceptions |
++| `WalkingHistoryRepository` | Fetch completed walk history |
++| `UploadRepository` | Upload images (photos for pets, profile) |
+ 
+ ## presentation/screens/
+ 
+ | Folder | Screens |
+ |---|---|
+-| `auth/` | LoginScreen, RegisterScreen |
++| `auth/` | LoginScreen |
+ | `home/` | HomeScreen (live walk card + upcoming + quick care grid) |
+-| `walks/` | WalksPage (full booking list), LiveWalkScreen (owner map), WalkRouteSummaryScreen |
++| `walks/` | WalksPage (booking list), LiveWalkScreen (owner map), WalkRouteSummaryScreen |
+ | `walkers/` | WalkerListPage, WalkerProfilePage, BookingScreen, WalkerBookingsScreen, WalkerLiveWalkScreen |
+ | `profile/` | ProfileScreen, EditProfileScreen |
+ | `pets/` | ManagePetsScreen, AddPetScreen |
+ | `services/` | ServicesPage (walkers · vets · stores tabs) |
+-| `coach/` | CoachScreen (AI assistant) |
+ 
+ ## presentation/bloc/
+ 
+-| Cubit | State | Manages |
++| Cubit | States | Manages |
+ |---|---|---|
++| `AuthCubit` | AuthInitial / AuthLoading / AuthAuthenticated / AuthError | Login, logout, token storage |
+ | `ProfileCubit` | ProfileLoading / ProfileLoaded / ProfileError | User + pets + walk count |
+ | `MyWalksCubit` | MyWalksLoading / MyWalksLoaded / MyWalksError | Owner's booking list |
+-| `LiveWalkCubit` | LiveWalkConnecting / LiveWalkWaiting / LiveWalkActive / LiveWalkCompleted / LiveWalkError | Owner's real-time walk map |
+-| `WalkerBookingCubit` | WalkerBookingLoading / WalkerBookingLoaded / WalkerBookingError | Walker's booking management |
+-| `WalkerLiveWalkCubit` | WalkerLiveWalkStarting / WalkerLiveWalkActive / WalkerLiveWalkEnding / WalkerLiveWalkCompleted / WalkerLiveWalkError | Walker's live map + GPS upload |
+-| `BookingCubit` | BookingIdle / BookingLoading / BookingSuccess / BookingError | Creating a new booking |
++| `WalkerCubit` | WalkerLoading / WalkerLoaded / WalkerError | Walker search + detail |
++| `WalkBookingCubit` | BookingIdle / BookingLoading / BookingSuccess / BookingError | Creating a new booking |
++| `WalkerAvailabilityCubit` | WalkerAvailabilityLoading / Loaded / Error | Walker's schedule management |
++| `WalkerBookingCubit` | WalkerBookingLoading / WalkerBookingLoaded / Error | Walker's incoming bookings |
++| `LiveWalkCubit` *(inline)* | LiveWalkConnecting / Waiting / Active / Completed / Error | Owner's real-time walk map |
++| `WalkerLiveWalkCubit` *(inline)* | WalkerLiveWalkStarting / Active / Ending / Completed / Error | Walker's live GPS upload |
++
++`LiveWalkCubit` and `WalkerLiveWalkCubit` are marked *inline* because they are instantiated directly in their screens rather than registered in GetIt — see [Dependency Injection](/technical/di-setup).
+diff --git a/sidebars.js b/sidebars.js
+index 40d75cf..36eaec4 100644
+--- a/sidebars.js
++++ b/sidebars.js
+@@ -10,7 +10,7 @@ const sidebars = {
+     },
+     {
+       type: 'category',
+-      label: 'Technical Documentation',
++      label: 'Mobile App (Flutter)',
+       collapsed: false,
+       items: [
+         'technical/architecture',
+@@ -22,6 +22,15 @@ const sidebars = {
+         'technical/background-location',
+       ],
+     },
++    {
++      type: 'category',
++      label: 'Backend (.NET)',
++      collapsed: false,
++      items: [
++        'technical/backend-architecture',
++        'technical/backend-api',
++      ],
++    },
+   ],
+ 
+   userGuideSidebar: [
+-- 
+2.43.0
+
